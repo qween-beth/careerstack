@@ -1,0 +1,32 @@
+. Upload Your Resume: Start by uploading your resume in PDF format. 2. Enter Your Query: Use the chat interface to ask questions or request specific tasks (e.g., "Find jobs in data science"). 3. Interact with the Assistant: The assistant will guide you through job searches, resume analysis, and cover letter generation. 4. Download Results: Save the generated cover letters or other documents as needed.   python and flask stack  
+job-search-assistant/
+│
+├── app/
+│   ├── __init__.py
+│   ├── routes.py
+│   ├── forms.py
+│   └── templates/
+│       ├── base.html
+│       ├── index.html
+│       ├── upload_resume.html
+│       └── chat_interface.html
+│
+├── agents/
+│   ├── __init__.py
+│   ├── supervisor.py
+│   ├── job_search.py
+│   ├── resume_analyzer.py
+│   ├── cover_letter_generator.py
+│   └── web_researcher.py
+│
+├── tools/
+│   ├── __init__.py
+│   ├── resume_extractor.py
+│   ├── job_search_tool.py
+│   ├── cover_letter_tool.py
+│   └── web_search_tool.py
+│
+├── config.py
+├── run.py
+├── requirements.txt
+└── .env

@@ -1,0 +1,15 @@
+flask
+flask-wtf
+python-dotenv
+langchain
+openai
+pypdf2
+requests
+spacy
+beautifulsoup4
+langchain_openai
+scrapy
+itemloaders
+pydantic
+
+pip install linkedin-api aiohttp beautifulsoup4 langchain-openai pydantic
