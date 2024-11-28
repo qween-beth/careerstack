@@ -17,7 +17,6 @@
                             Match: {{ job.Match_Score }}%
                         </span>
                     </div>
-                    
                     <div class="mt-2 space-y-2">
                         <div class="text-sm">
                             <p class="text-gray-600 font-medium">Required Skills:</p>
@@ -29,22 +28,12 @@
                                 {% endfor %}
                             </div>
                         </div>
-                        
-                        <div class="text-sm">
-                            <p class="text-gray-600 font-medium">Skills to Develop:</p>
-                            <div class="flex flex-wrap gap-1 mt-1">
-                                {% for skill in job.Skills_to_Develop %}
-                                <span class="bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded text-xs">
-                                    {{ skill }}
-                                </span>
-                                {% endfor %}
-                            </div>
-                        </div>
                     </div>
                 </div>
                 {% endfor %}
             </div>
 
+            {% if resume_insights and 'Current_Profile' in resume_insights %}
             <!-- Current Profile -->
             <div class="bg-white rounded-lg shadow-md p-4">
                 <h3 class="text-lg font-semibold text-indigo-800 mb-3">Current Profile</h3>
@@ -52,7 +41,7 @@
                     <div>
                         <h4 class="text-sm font-medium text-gray-600">Key Skills</h4>
                         <div class="flex flex-wrap gap-1 mt-1">
-                            {% for skill in resume_insights.Current_Profile.Key_Skills %}
+                            {% for skill in resume_insights['Current_Profile']['Key_Skills'] %}
                             <span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs">
                                 {{ skill }}
                             </span>
@@ -61,15 +50,15 @@
                     </div>
                     <div>
                         <h4 class="text-sm font-medium text-gray-600">Experience Summary</h4>
-                        <p class="text-sm text-gray-700">{{ resume_insights.Current_Profile.Experience_Summary }}</p>
+                        <p class="text-sm text-gray-700">{{ resume_insights['Current_Profile']['Experience_Summary'] }}</p>
                     </div>
                     <div>
                         <h4 class="text-sm font-medium text-gray-600">Education Level</h4>
-                        <p class="text-sm text-gray-700">{{ resume_insights.Current_Profile.Education_Level }}</p>
+                        <p class="text-sm text-gray-700">{{ resume_insights['Current_Profile']['Education_Level'] }}</p>
                     </div>
                 </div>
             </div>
-
+        
             <!-- Development Areas -->
             <div class="bg-white rounded-lg shadow-md p-4">
                 <h3 class="text-lg font-semibold text-indigo-800 mb-3">Development Areas</h3>
@@ -77,13 +66,81 @@
                     <div>
                         <h4 class="text-sm font-medium text-gray-600">Improvement Areas</h4>
                         <ul class="list-disc list-inside text-sm text-gray-700">
-                            {% for area in resume_insights.Development_Areas.Improvement_Areas %}
+                            {% for area in resume_insights['Development_Areas']['Improvement_Areas'] %}
                             <li>{{ area }}</li>
                             {% endfor %}
                         </ul>
                     </div>
                 </div>
             </div>
+
+            <!-- Additional Insights Section -->
+            <div class="bg-white rounded-lg shadow-md p-4 mt-4">
+                <h3 class="text-lg font-semibold text-indigo-800 mb-3">Additional Insights</h3>
+                
+                <!-- Career Context -->
+                {% if resume_insights.Career_Context %}
+                <div class="mb-4">
+                    <h4 class="text-sm font-medium text-gray-600">Career Context</h4>
+                    {% if resume_insights.Career_Context.Objectives %}
+                    <div class="mt-2">
+                        <p class="text-sm font-medium text-gray-600">Career Objectives:</p>
+                        <p class="text-sm text-gray-700">{{ resume_insights.Career_Context.Objectives }}</p>
+                    </div>
+                    {% endif %}
+                    
+                    {% if resume_insights.Career_Context.Industries %}
+                    <div class="mt-2">
+                        <p class="text-sm font-medium text-gray-600">Target Industries:</p>
+                        <div class="flex flex-wrap gap-1 mt-1">
+                            {% for industry in resume_insights.Career_Context.Industries %}
+                            <span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs">
+                                {{ industry }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+                
+                <!-- Action Items -->
+                {% if resume_insights['Development_Areas'] and resume_insights['Development_Areas']['Action_Items'] %}
+                <div class="mb-4">
+                    <h4 class="text-sm font-medium text-gray-600">Recommended Actions</h4>
+                    <ul class="list-disc list-inside text-sm text-gray-700 mt-2">
+                        {% for action in resume_insights['Development_Areas']['Action_Items'] %}
+                        <li>{{ action }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                <!-- Notable Organizations -->
+                {% if resume_insights['Current_Profile'] and resume_insights['Current_Profile']['Organizations'] %}
+                <div class="mb-4">
+                    <h4 class="text-sm font-medium text-gray-600">Notable Organizations</h4>
+                    <div class="flex flex-wrap gap-1 mt-1">
+                        {% for org in resume_insights['Current_Profile']['Organizations'] %}
+                        <span class="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs">
+                            {{ org }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Analysis Quality Indicator -->
+            {% if resume_insights['metadata'] and resume_insights['metadata']['analysis_quality'] %}
+            <div class="mt-4 p-2 {% if resume_insights['metadata']['analysis_quality'] == 'complete' %}bg-green-50 text-green-700{% else %}bg-yellow-50 text-yellow-700{% endif %} rounded-lg text-xs text-center">
+            Analysis Quality: {{ resume_insights['metadata']['analysis_quality']|title }}
+            {% if resume_insights['metadata']['last_updated'] %}
+            <br>Last Updated: {{ resume_insights['metadata']['last_updated'] }}
+            {% endif %}
+            </div>
+            {% endif %}
+            {% endif %}
         </div>
         {% else %}
         <div class="bg-yellow-50 p-4 rounded-lg">
@@ -108,73 +165,6 @@
                     Hello! I've analyzed your resume and I'm here to help with your career goals. What would you like to know?
                 </div>
             </div>
-
-            <!-- Additional Insights Section -->
-<div class="bg-white rounded-lg shadow-md p-4 mt-4">
-    <h3 class="text-lg font-semibold text-indigo-800 mb-3">Additional Insights</h3>
-    
-    <!-- Career Context -->
-    {% if resume_insights.Career_Context %}
-    <div class="mb-4">
-        <h4 class="text-sm font-medium text-gray-600">Career Context</h4>
-        {% if resume_insights.Career_Context.Objectives %}
-        <div class="mt-2">
-            <p class="text-sm font-medium text-gray-600">Career Objectives:</p>
-            <p class="text-sm text-gray-700">{{ resume_insights.Career_Context.Objectives }}</p>
-        </div>
-        {% endif %}
-        
-        {% if resume_insights.Career_Context.Industries %}
-        <div class="mt-2">
-            <p class="text-sm font-medium text-gray-600">Target Industries:</p>
-            <div class="flex flex-wrap gap-1 mt-1">
-                {% for industry in resume_insights.Career_Context.Industries %}
-                <span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs">
-                    {{ industry }}
-                </span>
-                {% endfor %}
-            </div>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-    
-    <!-- Action Items -->
-    {% if resume_insights.Development_Areas.Action_Items %}
-    <div class="mb-4">
-        <h4 class="text-sm font-medium text-gray-600">Recommended Actions</h4>
-        <ul class="list-disc list-inside text-sm text-gray-700 mt-2">
-            {% for action in resume_insights.Development_Areas.Action_Items %}
-            <li>{{ action }}</li>
-            {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
-    
-    <!-- Notable Organizations -->
-    {% if resume_insights.Current_Profile.Organizations %}
-    <div class="mb-4">
-        <h4 class="text-sm font-medium text-gray-600">Notable Organizations</h4>
-        <div class="flex flex-wrap gap-1 mt-1">
-            {% for org in resume_insights.Current_Profile.Organizations %}
-            <span class="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs">
-                {{ org }}
-            </span>
-            {% endfor %}
-        </div>
-    </div>
-    {% endif %}
-</div>
-
-<!-- Analysis Quality Indicator -->
-{% if resume_insights.metadata and resume_insights.metadata.analysis_quality %}
-<div class="mt-4 p-2 {% if resume_insights.metadata.analysis_quality == 'complete' %}bg-green-50 text-green-700{% else %}bg-yellow-50 text-yellow-700{% endif %} rounded-lg text-xs text-center">
-    Analysis Quality: {{ resume_insights.metadata.analysis_quality|title }}
-    {% if resume_insights.metadata.last_updated %}
-    <br>Last Updated: {{ resume_insights.metadata.last_updated|datetime }}
-    {% endif %}
-</div>
-{% endif %}
         </div>
 
         <form id="chat-form" class="p-4 border-t bg-white">

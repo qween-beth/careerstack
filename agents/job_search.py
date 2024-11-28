@@ -1,401 +1,181 @@
 import os
-from typing import Dict, List, Any, Optional
 import logging
-from datetime import datetime
+from typing import Dict, Any, List
 import requests
-from bs4 import BeautifulSoup
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
-from .resume_analyzer import ResumeAnalyzerAgent
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class JobSearchResult(BaseModel):
+# Define models for job listings and search results
+class JobListing(BaseModel):
     title: str = Field(description="Job title")
     company: str = Field(description="Company name")
     location: str = Field(description="Job location")
-    match_score: float = Field(description="Relevance score to resume")
-    url: str = Field(description="Job listing URL")
-    description: str = Field(description="Job description")
-    posted_date: str = Field(description="Job posting date")
-    skill_matches: List[str] = Field(description="Matching skills from resume")
-    missing_skills: List[str] = Field(description="Required skills not found in resume")
+    match_score: float = Field(description="Percentage match with candidate profile (0-100)")
+    requirements: List[str] = Field(description="Key job requirements")
+    description: str = Field(description="Brief job description")
+    salary_range: str = Field(description="Estimated salary range", default="Not provided")
+    application_link: str = Field(description="Job application URL", default="")
 
+class JobSearchResults(BaseModel):
+    listings: List[JobListing] = Field(description="List of job listings")
+    total_results: int = Field(description="Total number of job listings found")
+    search_parameters: Dict[str, Any] = Field(description="Parameters used in the job search")
+
+# Define the JobSearchAgent class
 class JobSearchAgent:
-    def __init__(self, llm: ChatOpenAI):
+    def __init__(self, llm: ChatGroq = None, api_key: str = None, temperature: float = 0.7, resume_analyzer=None):
         """
-        Initialize Integrated Job Search Agent
+        Initialize Job Search Agent
         
         Args:
-            llm (ChatOpenAI): Language model for analysis
+            llm (ChatGroq, optional): Language model for analysis
+            api_key (str, optional): Groq API key
+            temperature (float, optional): Creativity/randomness of model responses
+            resume_analyzer: Optional ResumeAnalyzerAgent instance
         """
-        self.llm = llm
-        self.resume_analyzer = ResumeAnalyzerAgent(llm)
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        # Initialize LLM
+        if llm is None:
+            api_key = api_key or os.getenv('GROQ_API_KEY')
+            if not api_key:
+                raise ValueError("Groq API key must be provided either as an argument or via GROQ_API_KEY environment variable")
+            self.llm = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name="llama3-70b-8192")
+        else:
+            self.llm = llm
+
+        self.logger = logging.getLogger(__name__)
+        self.resume_analyzer = resume_analyzer  # Optional ResumeAnalyzerAgent
+        self.resume_context = None  # Placeholder for resume analysis
+        self.job_search_apis = [
+            "https://jobs.github.com/positions.json",
+            "https://authenticjobs.com/api/", 
+            "https://jobs.stackoverflow.com/api"
+        ]
+
+    def set_resume_context(self, resume_analysis: Dict[str, Any]):
+        """
+        Set resume context for personalized job searching
+        
+        Args:
+            resume_analysis (Dict): Resume analysis from ResumeAnalyzerAgent
+        """
+        self.resume_context = {
+            'key_skills': resume_analysis.get('Current_Profile', {}).get('Key_Skills', []),
+            'experience_summary': resume_analysis.get('Current_Profile', {}).get('Experience_Summary', ''),
+            'career_objectives': resume_analysis.get('Career_Context', {}).get('Objectives', ''),
+            'recommended_job_titles': [
+                job['Job_Title'] for job in resume_analysis.get('Career_Recommendations', [])
+            ],
+            'skill_gaps': resume_analysis.get('Development_Areas', {}).get('Skill_Gaps', {})
         }
 
-    def _search_jobs(self, search_params: Dict[str, Any]) -> List[Dict]:
+    def _generate_advanced_search_query(self, base_query: str) -> str:
         """
-        Search jobs using public APIs
+        Generate enhanced job search query using resume context
         
         Args:
-            search_params: Dictionary containing search parameters
-            
+            base_query (str): Initial job search query
+        
+        Returns:
+            str: Enriched search query
+        """
+        if not self.resume_context:
+            return base_query
+
+        # Prompt for LLM to create an enhanced query
+        query_enhancement_prompt = PromptTemplate(
+            template="""Enhance a job search query based on a candidate's profile:
+            Candidate Profile:
+            - Key Skills: {key_skills}
+            - Experience Summary: {experience_summary}
+            - Career Objectives: {career_objectives}
+            - Recommended Job Titles: {recommended_job_titles}
+            Original Query: {base_query}
+            Return the enhanced search query.""",
+            input_variables=["key_skills", "experience_summary", "career_objectives", "recommended_job_titles", "base_query"]
+        )
+
+        enhanced_query_chain = query_enhancement_prompt | self.llm
+
+        try:
+            enhanced_query_result = enhanced_query_chain.invoke({
+                "key_skills": ", ".join(self.resume_context.get('key_skills', [])),
+                "experience_summary": self.resume_context.get('experience_summary', ''),
+                "career_objectives": self.resume_context.get('career_objectives', ''),
+                "recommended_job_titles": ", ".join(self.resume_context.get('recommended_job_titles', [])),
+                "base_query": base_query
+            })
+            return enhanced_query_result.content.strip()
+        except Exception as e:
+            self.logger.warning(f"Query enhancement failed: {e}")
+            return base_query
+
+    def _fetch_job_listings(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Fetch job listings from external APIs
+        
+        Args:
+            query (str): Job search query
+        
         Returns:
             List of job listings
         """
-        try:
-            # Initialize empty list for all jobs
-            all_jobs = []
-            
-            # Use GitHub Jobs API (public)
-            github_jobs = self._search_github_jobs(search_params)
-            if github_jobs:
-                all_jobs.extend(github_jobs)
-            
-            # Use Indeed API if you have API key
-            if os.getenv('INDEED_API_KEY'):
-                indeed_jobs = self._search_indeed_jobs(search_params)
-                if indeed_jobs:
-                    all_jobs.extend(indeed_jobs)
-            
-            return all_jobs
-
-        except Exception as e:
-            logger.error(f"Job search failed: {e}")
-            return []
-
-    def _search_github_jobs(self, search_params: Dict[str, Any]) -> List[Dict]:
-        """
-        Search GitHub Jobs
-        """
-        try:
-            base_url = "https://jobs.github.com/positions.json"
-            params = {
-                'description': search_params["position"],
-                'location': search_params["location"],
-                'full_time': 'true'
-            }
-            
-            response = requests.get(base_url, params=params, headers=self.headers)
-            if response.status_code == 200:
-                jobs = response.json()
-                return [{
-                    'title': job.get('title'),
-                    'company': job.get('company'),
-                    'location': job.get('location'),
-                    'url': job.get('url'),
-                    'description': job.get('description'),
-                    'posted_date': job.get('created_at')
-                } for job in jobs]
-            return []
-        except Exception as e:
-            logger.warning(f"GitHub Jobs search failed: {e}")
-            return []
-
-    def _search_indeed_jobs(self, search_params: Dict[str, Any]) -> List[Dict]:
-        """
-        Search Indeed Jobs if API key is available
-        """
-        api_key = os.getenv('INDEED_API_KEY')
-        if not api_key:
-            return []
-            
-        try:
-            base_url = "https://api.indeed.com/ads/apisearch"
-            params = {
-                'publisher': api_key,
-                'q': search_params["position"],
-                'l': search_params["location"],
-                'format': 'json',
-                'v': '2',
-                'limit': 25
-            }
-            
-            response = requests.get(base_url, params=params, headers=self.headers)
-            if response.status_code == 200:
-                data = response.json()
-                return [{
-                    'title': job.get('jobtitle'),
-                    'company': job.get('company'),
-                    'location': job.get('formattedLocation'),
-                    'url': job.get('url'),
-                    'description': job.get('snippet'),
-                    'posted_date': job.get('formattedRelativeTime')
-                } for job in data.get('results', [])]
-            return []
-        except Exception as e:
-            logger.warning(f"Indeed Jobs search failed: {e}")
-            return []
-
-    def _match_jobs_to_analysis(self, jobs: List[Dict], resume_analysis: Dict[str, Any]) -> List[JobSearchResult]:
-        """
-        Match jobs using the resume analysis results
-        """
-        current_profile = resume_analysis["Current Profile"]
-        skill_gaps = resume_analysis["Development Areas"]["Skill Gaps"]
-        matched_jobs = []
-        
-        for job in jobs:
+        combined_listings = []
+        for api_url in self.job_search_apis:
             try:
-                prompt = PromptTemplate.from_template("""
-                    Analyze this job posting against the candidate's profile:
-                    
-                    Job Title: {title}
-                    Job Description: {description}
-                    
-                    Candidate Skills: {skills}
-                    Candidate Experience: {experience}
-                    
-                    Provide:
-                    1. Match score (0-100)
-                    2. List of matching skills
-                    3. List of missing skills required for this role
-                    
-                    Format as: Score: X, Matching Skills: [skills], Missing Skills: [skills]
-                """)
-                
-                result = self.llm.invoke(prompt.format(
-                    title=job["title"],
-                    description=job["description"],
-                    skills=", ".join(current_profile["Key Skills"]),
-                    experience=current_profile["Experience Summary"]
-                ))
-                
-                # Parse the response
-                parts = str(result).split(", ")
-                score = float(parts[0].split(": ")[1])
-                matching_skills = parts[1].split(": ")[1].strip("[]").split(", ")
-                missing_skills = parts[2].split(": ")[1].strip("[]").split(", ")
-                
-                matched_jobs.append(JobSearchResult(
-                    title=job["title"],
-                    company=job["company"],
-                    location=job["location"],
-                    match_score=score,
-                    url=job["url"],
-                    description=job["description"],
-                    posted_date=job["posted_date"],
-                    skill_matches=matching_skills,
-                    missing_skills=missing_skills
-                ))
-                
+                response = requests.get(api_url, params={'description': query, 'location': 'remote'})
+                if response.status_code == 200:
+                    listings = response.json().get('jobs', [])
+                    combined_listings.extend(listings)
             except Exception as e:
-                logger.warning(f"Job matching error: {e}")
-                continue
-        
-        return sorted(matched_jobs, key=lambda x: x.match_score, reverse=True)
+                self.logger.warning(f"Error searching {api_url}: {e}")
+        return combined_listings
 
-    def search_jobs(self, resume_path: str, query: str) -> Dict[str, Any]:
+    def process(self, query: str, resume_path: str = None) -> Dict[str, Any]:
         """
-        Main job search method with chat integration
-        """
-        try:
-            # Get resume analysis
-            resume_analysis = self.resume_analyzer.analyze_resume(resume_path)
-            
-            # Get search preferences from query instead of terminal input
-            search_params = self._get_search_preferences(resume_analysis, query)
-            
-            # Search jobs
-            raw_jobs = self._search_jobs(search_params)
-            
-            if not raw_jobs:
-                return {
-                    "status": "no_results",
-                    "message": "No jobs found matching your criteria. Try broadening your search or changing location.",
-                    "resume_analysis": resume_analysis,
-                    "search_criteria": search_params
-                }
-            
-            # Match jobs
-            matched_jobs = self._match_jobs_to_analysis(raw_jobs, resume_analysis)
-            
-            # Format response for chat interface
-            response = {
-                "status": "success",
-                "message": self._format_chat_response(matched_jobs, search_params),
-                "results": {
-                    "resume_analysis": {
-                        "skills": resume_analysis["Current Profile"]["Key Skills"],
-                        "experience": resume_analysis["Current Profile"]["Experience Summary"],
-                        "career_objectives": resume_analysis["Career Context"]["Objectives"]
-                    },
-                    "search_criteria": search_params,
-                    "total_jobs": len(matched_jobs),
-                    "top_matches": [
-                        {
-                            "title": job.title,
-                            "company": job.company,
-                            "location": job.location,
-                            "match_score": job.match_score,
-                            "url": job.url,
-                            "posted_date": job.posted_date,
-                            "matching_skills": job.skill_matches,
-                            "skills_to_develop": job.missing_skills,
-                            "description_preview": job.description[:200] + "..."
-                        } for job in matched_jobs[:5]
-                    ]
-                }
-            }
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Job search failed: {e}")
-            return {
-                "status": "error",
-                "message": f"Job search failed: {str(e)}",
-                "resume_analysis": resume_analysis if 'resume_analysis' in locals() else None,
-                "search_criteria": search_params if 'search_params' in locals() else None
-            }
-
-    def _format_chat_response(self, matched_jobs: List[JobSearchResult], search_params: Dict[str, Any]) -> str:
-        """Format job search results for chat interface"""
-        if not matched_jobs:
-            return "I couldn't find any matching jobs. Try adjusting your search criteria."
-            
-        response_parts = [
-            f"I found {len(matched_jobs)} jobs matching your search for {search_params['position']} "
-            f"in {search_params['location'] or 'any location'}. Here are the top matches:\n"
-        ]
+        Execute job search with optional resume analysis
         
-        for i, job in enumerate(matched_jobs[:5], 1):
-            response_parts.append(
-                f"{i}. {job.title} at {job.company}\n"
-                f"📍 {job.location}\n"
-                f"Match Score: {job.match_score}%\n"
-                f"Posted: {job.posted_date}\n"
-                f"Matching Skills: {', '.join(job.skill_matches[:3])}...\n"
-                f"Skills to Develop: {', '.join(job.missing_skills[:3])}...\n"
-                f"More Info: {job.url}\n"
+        Args:
+            query (str): Job search query
+            resume_path (str, optional): Path to resume PDF
+        
+        Returns:
+            Dict with job search results
+        """
+        # Analyze resume if provided and analyzer is available
+        if resume_path and os.path.exists(resume_path) and self.resume_analyzer:
+            try:
+                resume_analysis = self.resume_analyzer.analyze_resume(resume_path)
+                self.set_resume_context(resume_analysis)
+            except Exception as e:
+                self.logger.warning(f"Resume analysis failed: {e}")
+
+        # Enhance query if resume context exists
+        enhanced_query = self._generate_advanced_search_query(query)
+
+        # Fetch and process job listings
+        raw_listings = self._fetch_job_listings(enhanced_query)
+        processed_listings = [
+            JobListing(
+                title=job.get('title', 'Untitled Position'),
+                company=job.get('company', 'Unknown Company'),
+                location=job.get('location', 'Remote/Unspecified'),
+                match_score=50.0,  # Placeholder for match score
+                requirements=job.get('requirements', []),
+                description=job.get('description', 'No description available'),
+                salary_range=job.get('salary', 'Not provided'),
+                application_link=job.get('url', '')
             )
-        
-        response_parts.append("\nWould you like to refine your search or learn more about any of these positions?")
-        return "\n".join(response_parts)
-    
+            for job in raw_listings
+        ]
 
-    def _get_search_preferences(self, resume_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Get search preferences from user"""
-        search_params = self._extract_search_parameters(resume_analysis)
-        
-        print("\n=== Job Search Preferences ===")
-        print("\nBased on your resume analysis:")
-        print(f"- Recommended roles: {', '.join(search_params['recent_titles'])}")
-        print(f"- Key skills: {', '.join(search_params['skills'][:5])}")
-        
-        position = input("\nWhat position are you looking for? (Press Enter for top recommendation): ").strip()
-        if not position:
-            position = search_params['recent_titles'][0]
-        
-        location = input("\nWhere would you like to work?: ").strip()
-        
+        # Return top 10 listings
         return {
-            "position": position,
-            "location": location,
-            "skills": search_params['skills'],
-            "industry_keywords": search_params['industry_keywords']
-        }
-
-    def _extract_search_parameters(self, resume_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract search parameters from resume analysis"""
-        current_profile = resume_analysis.get("Current Profile", {})
-        career_context = resume_analysis.get("Career Context", {})
-        recommendations = resume_analysis.get("Career Recommendations", [])
-        
-        return {
-            "skills": current_profile.get("Key Skills", []),
-            "recent_titles": [rec["Job Title"] for rec in recommendations[:3]],
-            "industry_keywords": career_context.get("Industry Keywords", [])
-        }
-
-    
-    def process(self, query: str, resume_path: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Process a job search query
-        
-        Args:
-            query (str): User's job search query
-            resume_path (Optional[str]): Path to user's resume
-            
-        Returns:
-            Dict containing search results and status
-        """
-        if not resume_path:
-            return {
-                "status": "error",
-                "message": "Resume path is required for job search"
-            }
-        
-        try:
-            # Extract search parameters from query
-            search_params = self._parse_query(query)
-            
-            # Perform the job search
-            results = self.search_jobs(resume_path)
-            
-            # Format the response
-            return {
-                "status": "success",
-                "results": {
-                    "listings": [
-                        {
-                            "title": job["title"],
-                            "company": job["company"],
-                            "location": job["location"],
-                            "match_score": job["match_score"],
-                            "requirements": job.get("matching_skills", []),
-                            "url": job.get("url", ""),
-                            "description": job.get("description_preview", "")
-                        }
-                        for job in results.get("top_matches", [])
-                    ],
-                    "total_found": results.get("total_jobs", 0),
-                    "search_criteria": results.get("search_criteria", {})
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing job search query: {e}")
-            return {
-                "status": "error",
-                "message": str(e)
-            }
-
-    def _parse_query(self, query: str) -> Dict[str, str]:
-        """
-        Parse the search query to extract relevant parameters
-        
-        Args:
-            query (str): User's search query
-            
-        Returns:
-            Dict with parsed search parameters
-        """
-        # Use the LLM to extract search parameters
-        prompt = PromptTemplate.from_template("""
-            Extract job search parameters from this query:
-            {query}
-            
-            Return only:
-            Position: [job title]
-            Location: [location]
-        """)
-        
-        result = str(self.llm.invoke(prompt.format(query=query)))
-        
-        # Parse the response
-        params = {}
-        for line in result.split('\n'):
-            if ':' in line:
-                key, value = line.split(':', 1)
-                params[key.strip().lower()] = value.strip().strip('[]')
-        
-        return {
-            "position": params.get("position", ""),
-            "location": params.get("location", "")
+            "status": "success",
+            "results": JobSearchResults(
+                listings=processed_listings[:10],
+                total_results=len(processed_listings),
+                search_parameters={"query": query, "resume_used": bool(self.resume_context)}
+            ).dict()
         }

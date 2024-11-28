@@ -11,9 +11,5 @@ langchain_openai
 scrapy
 itemloaders
 pydantic
-linkedin-api
-aiohttp
-beautifulsoup4
-langchain-openai
-pydantic
-gunicorn
+
+pip install linkedin-api aiohttp beautifulsoup4 langchain-openai pydantic

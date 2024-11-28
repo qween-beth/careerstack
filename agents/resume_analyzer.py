@@ -3,7 +3,7 @@ import spacy
 import PyPDF2
 import logging
 from typing import Dict, Any, List
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq  # Changed from OpenAI import
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
@@ -28,14 +28,33 @@ class EnhancedResumeAnalysis(BaseModel):
     experience_level: List[str] = Field(description="General areas for experience level")
 
 class ResumeAnalyzerAgent:
-    def __init__(self, llm: ChatOpenAI):
+    def __init__(self, llm: ChatGroq = None, api_key: str = None, temperature: float = 0.7):
         """
         Initialize Enhanced Resume Analyzer Agent
         
         Args:
-            llm (ChatOpenAI): Language model for analysis
+            llm (ChatGroq, optional): Language model for analysis
+            api_key (str, optional): Groq API key
+            temperature (float, optional): Creativity/randomness of model responses
         """
-        self.llm = llm
+        # Use provided LLM or create a new one
+        if llm is None:
+            # Validate API key
+            if api_key is None:
+                api_key = os.getenv('GROQ_API_KEY')
+            
+            if not api_key:
+                raise ValueError("Groq API key must be provided either as an argument or via GROQ_API_KEY environment variable")
+            
+            # Default to Llama3-70b as it's typically the most capable Groq model
+            self.llm = ChatGroq(
+                temperature=temperature, 
+                groq_api_key=api_key, 
+                model_name="llama3-70b-8192"
+            )
+        else:
+            self.llm = llm
+        
         self.logger = logging.getLogger(__name__)
         
         # Load spaCy model for text processing
@@ -64,33 +83,6 @@ class ResumeAnalyzerAgent:
         except Exception as e:
             self.logger.error(f"Error extracting PDF text: {e}")
             raise
-
-    def _create_career_prompt(self, resume_text: str) -> str:
-        """
-        Create a detailed prompt for career analysis
-        
-        Args:
-            resume_text (str): Extracted resume text
-            
-        Returns:
-            str: Formatted prompt
-        """
-        return f"""
-        Analyze this resume in detail and provide comprehensive career insights:
-        
-        Resume Text:
-        {resume_text}
-        
-        Please analyze for:
-        1. Current skill set and expertise level
-        2. Career trajectory and potential
-        3. Industry-relevant job titles
-        4. Required skills for recommended roles
-        5. Specific steps for career advancement
-        6. Job search strategies
-        
-        Focus on practical, actionable recommendations and realistic job matches.
-        """
 
     def analyze_resume(self, resume_path: str) -> Dict[str, Any]:
         """
@@ -195,6 +187,55 @@ class ResumeAnalyzerAgent:
             }
 
 
+    def process(self, query: str, resume_path: str = None) -> Dict[str, Any]:
+        """
+        Process resume-related queries
+        
+        Args:
+            query (str): User query
+            resume_path (str, optional): Path to resume PDF
+        
+        Returns:
+            Dict with processed query results
+        """
+        if resume_path:
+            # If resume is provided, perform a comprehensive analysis
+            return self.analyze_resume(resume_path)
+        
+        # Handle general resume-related queries without a specific resume
+        response = self.llm.invoke(query)
+        return {"response": response.content}
+    
+    
+    def _create_career_prompt(self, resume_text: str) -> str:
+        """
+        Create a detailed prompt for career analysis
+        
+        Args:
+            resume_text (str): Extracted resume text
+            
+        Returns:
+            str: Formatted prompt
+        """
+        return f"""
+        Analyze this resume in detail and provide comprehensive career insights:
+        
+        Resume Text:
+        {resume_text}
+        
+        Please analyze for:
+        1. Current skill set and expertise level
+        2. Career trajectory and potential
+        3. Industry-relevant job titles
+        4. Required skills for recommended roles
+        5. Specific steps for career advancement
+        6. Job search strategies
+        
+        Focus on practical, actionable recommendations and realistic job matches.
+        """
+
+    
+
     def get_job_search_strategy(self, job_title: str, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate specific job search strategy for a recommended role
@@ -247,28 +288,4 @@ class ResumeAnalyzerAgent:
             }
         
 
-    def process(self, resume_path: str) -> Dict[str, Any]:
-        """
-        Process the resume and generate career insights
-        
-        Args:
-            resume_path (str): Path to resume PDF
-            
-        Returns:
-            Dict: Career analysis and insights
-        """
-        try:
-            # Call analyze_resume to get the detailed analysis
-            resume_analysis = self.analyze_resume(resume_path)
-
-            # Additional processing or post-processing can be added here if needed
-
-            return resume_analysis
-
-        except Exception as e:
-            self.logger.error(f"Error processing resume: {e}")
-            return {
-                "error": "An error occurred during resume processing",
-                "details": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
+   

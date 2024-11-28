@@ -4,6 +4,7 @@ from werkzeug.utils import secure_filename
 from config import Config
 from .forms import ResumeUploadForm, ChatForm
 from agents.supervisor import JobAssistantSupervisor
+from app.services.chat_agent import ChatAgent
 import logging
 import json
 from datetime import datetime
@@ -28,92 +29,36 @@ def store_resume_data(filepath, resume_insights):
 
 def get_resume_data():
     """Retrieve resume path and insights from session"""
-    filepath = session.get('uploaded_resume_path')
+    filepath = session.get('resume_path')
     insights_json = session.get('resume_insights')
     insights = json.loads(insights_json) if insights_json else None
     return filepath, insights
 
+
 @main_bp.route('/', methods=['GET', 'POST'])
 def index():
-    """Main index page with resume upload functionality"""
     upload_form = ResumeUploadForm()
     chat_form = ChatForm()
 
     if upload_form.validate_on_submit():
-        resume = upload_form.resume.data
-        filename = secure_filename(resume.filename)
-        filepath = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
-        
-        try:
-            # Ensure upload directory exists
-            os.makedirs(current_app.config['UPLOAD_FOLDER'], exist_ok=True)
-            
-            # Save the file
-            resume.save(filepath)
-            logger.info(f"Resume uploaded: {filepath}")
+        return handle_resume_upload(upload_form.resume.data)
 
-            # Analyze resume and store both path and insights
-            resume_insights = job_assistant.set_resume(filepath)
-            store_resume_data(filepath, resume_insights)
-            
-            flash('Resume uploaded successfully!', 'success')
-            return redirect(url_for('main.chat_interface'))
-        except Exception as e:
-            logger.error(f"Resume upload error: {str(e)}")
-            return render_template(
-                'index.html',
-                upload_form=upload_form,
-                chat_form=chat_form,
-                error=str(e)
-            )
+    return render_template('index.html', upload_form=upload_form, chat_form=chat_form)
 
-    return render_template(
-        'index.html',
-        upload_form=upload_form,
-        chat_form=chat_form
-    )
-
-@main_bp.route('/chat', methods=['GET'])
-def chat_interface():
-    """Render the chat interface."""
-    filepath, resume_insights = get_resume_data()
-    
-    if not filepath or not resume_insights:
-        logger.warning("Missing resume data in session")
-        flash("Please upload a file to start chatting.", "warning")
-        return redirect(url_for('main.index'))
-    
-    try:
-        # Verify file still exists
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Resume file not found: {filepath}")
-            
-        # Re-initialize job assistant with the file
-        resume_insights = job_assistant.set_resume(filepath)
-        
-        chat_form = ChatForm()
-        return render_template(
-            'chat_interface.html',
-            chat_form=chat_form,
-            resume_insights=resume_insights
-        )
-    except FileNotFoundError:
-        logger.error(f"Uploaded file not found: {filepath}")
-        flash("The uploaded file was not found. Please upload again.", "danger")
-        # Clear invalid session data
-        session.pop('uploaded_resume_path', None)
-        session.pop('resume_insights', None)
-        return redirect(url_for('main.index'))
 
 @main_bp.route('/upload_resume', methods=['POST'])
 def upload_resume():
-    """Handle resume upload with JSON response"""
     if 'resume' not in request.files:
         return jsonify({'success': False, 'error': 'No resume file provided.'})
     
     file = request.files['resume']
+    return handle_resume_upload(file)
+
+
+def handle_resume_upload(file):
+    """Centralized resume upload handling"""
     if file.filename == '':
-        return jsonify({'success': False, 'error': 'No selected file.'})
+        return jsonify({'success': False, 'error': 'No selected file.'}) if request.is_json else redirect(url_for('main.index'))
     
     filename = secure_filename(file.filename)
     filepath = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
@@ -126,26 +71,55 @@ def upload_resume():
         file.save(filepath)
         logger.info(f"Resume uploaded: {filepath}")
         
-        # Store filepath in session for analysis status check
-        session['resume_filepath'] = filepath
-        session['analysis_started'] = time.time()
+        # Consistent session storage
+        session['resume_path'] = filepath
         
-        # Start async analysis if you have background tasks set up
-        # Otherwise, do it synchronously
+        # Analyze resume
         resume_insights = job_assistant.set_resume(filepath)
-        store_resume_data(filepath, resume_insights)
         
-        return jsonify({
-            'success': True,
-            'message': 'Resume uploaded successfully'
-        })
+        # Store insights
+        session['resume_insights'] = json.dumps(resume_insights)
+        
+        if request.is_json:
+            return jsonify({
+                'success': True,
+                'message': 'Resume uploaded successfully'
+            })
+        else:
+            flash('Resume uploaded successfully!', 'success')
+            return redirect(url_for('main.chat_interface'))
     
     except Exception as e:
         logger.error(f"Resume upload error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        })
+        if request.is_json:
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            })
+        else:
+            flash('An error occurred during upload. Please try again.', 'danger')
+            return redirect(url_for('main.index'))
+        
+
+@main_bp.route('/chat', methods=['GET'])
+def chat_interface():
+    """Render the chat interface."""
+    filepath, resume_insights = get_resume_data()
+
+    if not filepath or not os.path.exists(filepath):
+        logger.error("Resume file not found in session or missing on disk.")
+        flash("Please upload your resume to proceed.", "warning")
+        session.clear()  # Clear invalid session data
+        return redirect(url_for('main.index'))
+
+    chat_form = ChatForm()
+    return render_template(
+        'chat_interface.html',
+        chat_form=chat_form,
+        resume_insights=resume_insights
+    )
+
+
 
 @main_bp.route('/check_analysis_status')
 def check_analysis_status():
@@ -187,6 +161,7 @@ def check_analysis_status():
         })
     
 
+
 @main_bp.route('/chat/message', methods=["POST"])
 def chat_message():
     """Handle chat interactions."""
@@ -194,24 +169,14 @@ def chat_message():
 
     if chat_form.validate_on_submit():
         try:
-            # Verify resume is uploaded and available in session
-            resume_path = session.get('resume_path')  # Assuming resume path is stored in session
-            
-            if not resume_path:
+            filepath, resume_insights = get_resume_data()
+            if not filepath:
                 raise ValueError("No resume loaded. Please upload your resume first.")
-            
-            # Always reinitialize the job assistant with the resume path to ensure consistency
-            job_assistant.set_resume(resume_path)
 
             query = chat_form.query.data
-            response_data = None
-
-            # If the query is related to job search
-            if 'job' in query.lower():
-                response_data = job_assistant.process_query(query)
-            else:
-                # Handle other chat queries
-                response_data = chat_agent.process(query)
+            
+            # Use job assistant with current resume
+            response_data = job_assistant.process_query(query)
 
             return jsonify({
                 "response": response_data.get("response"),
@@ -230,4 +195,5 @@ def chat_message():
             }), 500
 
     return jsonify({'error': 'Invalid form submission'}), 400
+
 
