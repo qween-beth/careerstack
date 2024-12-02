@@ -1,4 +1,5 @@
 flask
+langchain_groq
 flask-wtf
 python-dotenv
 langchain
